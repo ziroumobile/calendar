@@ -9,15 +9,11 @@ import json
 import os
 import uuid
 from datetime import date, datetime, timedelta
-from pathlib import Path
 
 import streamlit as st
 
 st.set_page_config(page_title="行事曆", page_icon="📅", layout="wide")
 
-BASE = Path(__file__).parent
-USERS_FILE = BASE / "users.json"
-DATA_DIR = BASE / "data"
 CATS = {
     "課程": "#4F8EF7",
     "作業": "#F7A24F",
@@ -52,21 +48,33 @@ def hash_pw(pw, salt=None):
     return {"salt": salt, "hash": h}
 
 
-def load_users():
-    if not USERS_FILE.exists():  # 首次執行：建立測試帳號 1 / 111111
-        save_users({"1": hash_pw("111111")})
-    try:
-        return json.loads(USERS_FILE.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
+@st.cache_resource
+def db():
+    if "supabase" not in st.secrets:
+        st.error("尚未設定 Supabase：請在 Streamlit Secrets 加入 [supabase] 的 url 與 key")
+        st.stop()
+    from supabase import create_client
+    return create_client(st.secrets["supabase"]["url"], st.secrets["supabase"]["key"])
 
 
-def save_users(users):
-    USERS_FILE.write_text(json.dumps(users, indent=2), encoding="utf-8")
+def get_user(name):
+    rows = db().table("users").select("*").eq("username", name).execute().data
+    return rows[0] if rows else None
+
+
+def create_user(name, pw):
+    db().table("users").insert({"username": name, **hash_pw(pw)}).execute()
+
+
+@st.cache_resource
+def init_test_user():  # 測試帳號 1 / 111111（不存在才建立）
+    if not get_user("1"):
+        create_user("1", "111111")
+    return True
 
 
 def check_login(name, pw):
-    u = load_users().get(name)
+    u = get_user(name)
     return bool(u) and hmac.compare_digest(hash_pw(pw, u["salt"])["hash"], u["hash"])
 
 
@@ -90,39 +98,46 @@ def login_page():
                 pw = st.text_input("新密碼", type="password")
                 pw2 = st.text_input("再輸入一次密碼", type="password")
                 if st.form_submit_button("建立帳號", use_container_width=True):
-                    users = load_users()
                     if not name.strip() or not pw:
                         st.error("帳號與密碼不可空白")
-                    elif name.strip() in users:
+                    elif get_user(name.strip()):
                         st.error("此帳號已存在")
                     elif pw != pw2:
                         st.error("兩次密碼不一致")
                     else:
-                        users[name.strip()] = hash_pw(pw)
-                        save_users(users)
+                        create_user(name.strip(), pw)
                         st.success("建立成功，請回到「登入」分頁")
 
 
-# ---------- 資料（每個帳號各自一份，初始為空） ----------
-def user_file():
-    key = hashlib.sha1(st.session_state.user.encode()).hexdigest()[:16]
-    DATA_DIR.mkdir(exist_ok=True)
-    return DATA_DIR / f"{key}.json"
+# ---------- 資料（存在 Supabase，每個帳號各自一份） ----------
+def _to_app(r):
+    return {"id": r["id"], "title": r["title"], "date": r["date"], "start": r["start_time"][:5],
+            "end": r["end_time"][:5], "cat": r["cat"], "repeat": r["repeat"], "note": r["note"] or ""}
+
+
+def _to_db(e):
+    return {"id": e["id"], "username": st.session_state.user, "title": e["title"], "date": e["date"],
+            "start_time": e["start"], "end_time": e["end"], "cat": e["cat"],
+            "repeat": e.get("repeat", "無"), "note": e.get("note", "")}
 
 
 def load_events():
-    f = user_file()
-    if f.exists():
-        try:
-            return json.loads(f.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return []
-    return []
+    rows = db().table("events").select("*").eq("username", st.session_state.user).execute().data
+    return [_to_app(r) for r in rows]
 
 
-def save_events(events):
-    user_file().write_text(json.dumps(events, ensure_ascii=False, indent=2), encoding="utf-8")
+def add_event(e):
+    db().table("events").insert(_to_db(e)).execute()
 
+
+def delete_event(eid):
+    db().table("events").delete().eq("id", eid).eq("username", st.session_state.user).execute()
+
+
+def replace_events(events):
+    db().table("events").delete().eq("username", st.session_state.user).execute()
+    if events:
+        db().table("events").insert([_to_db({**e, "id": uuid.uuid4().hex[:8]}) for e in events]).execute()
 
 def events_on(events, day):
     out = []
@@ -186,6 +201,7 @@ def list_view(events, cur):
 
 
 # ---------- 主程式 ----------
+init_test_user()
 if "user" not in st.session_state:
     login_page()
     st.stop()
@@ -221,11 +237,10 @@ with st.sidebar:
             elif t2 <= t1:
                 st.error("結束時間需晚於開始時間")
             else:
-                events.append({"id": uuid.uuid4().hex[:8], "title": title.strip(),
-                               "date": d.isoformat(), "start": t1.strftime("%H:%M"),
-                               "end": t2.strftime("%H:%M"), "cat": cat,
-                               "repeat": repeat, "note": note})
-                save_events(events)
+                add_event({"id": uuid.uuid4().hex[:8], "title": title.strip(),
+                           "date": d.isoformat(), "start": t1.strftime("%H:%M"),
+                           "end": t2.strftime("%H:%M"), "cat": cat,
+                           "repeat": repeat, "note": note})
                 st.session_state.cur = d
                 st.rerun()
 
@@ -236,7 +251,7 @@ with st.sidebar:
                   sorted(events, key=lambda e: (e["date"], e["start"]))}
         pick = st.selectbox("選擇事件", list(labels), format_func=labels.get)
         if st.button("刪除", use_container_width=True):
-            save_events([e for e in events if e["id"] != pick])
+            delete_event(pick)
             st.rerun()
     else:
         st.caption("目前沒有事件")
@@ -249,9 +264,9 @@ with st.sidebar:
         try:
             data = json.load(up)
             assert isinstance(data, list)
-            save_events(data)
+            replace_events(data)
             st.rerun()
-        except (json.JSONDecodeError, AssertionError):
+        except (json.JSONDecodeError, AssertionError, KeyError, TypeError):
             st.error("檔案格式錯誤")
 
 view = st.radio("檢視", ["月", "週", "清單"], horizontal=True, label_visibility="collapsed")
