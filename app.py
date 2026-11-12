@@ -27,17 +27,39 @@ HOURS = range(7, 23)
 CSS = """
 <style>
 .cal{width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px}
-.cal th{background:#f3f4f6;padding:6px;border:1px solid #e5e7eb;color:#374151}
-.cal td{border:1px solid #e5e7eb;vertical-align:top;height:96px;padding:4px;overflow:hidden}
-.cal td.out{background:#fafafa;color:#9ca3af}
-.cal td.today{background:#eff6ff}
-.cal .d{font-weight:600;margin-bottom:2px}
-.cal td.today .d{color:#2563eb}
-.wd{text-align:center;font-weight:600;background:#f3f4f6;padding:4px;border-radius:4px}
-.chip{color:#fff;border-radius:4px;padding:1px 5px;margin:1px 0;font-size:11px;
-      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.cal th{background:rgba(79,142,247,.12);color:#4F8EF7;padding:6px;border:1px solid rgba(128,128,128,.25)}
+.cal td{border:1px solid rgba(128,128,128,.25);vertical-align:top;height:96px;padding:4px;overflow:hidden}
+.cal td.today{background:rgba(79,142,247,.10)}
 .wk td{height:34px}
-.wk td.h{width:56px;background:#f9fafb;text-align:right;color:#6b7280}
+.wk td.h{width:56px;text-align:right;opacity:.65}
+.chip{color:#fff;border-radius:6px;padding:2px 6px;margin:2px 0;font-size:11px;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.more{font-size:11px;opacity:.6}
+.wd{text-align:center;font-weight:600;padding:6px 0;border-radius:8px;
+    background:rgba(79,142,247,.12);color:#4F8EF7}
+[class*="st-key-cell"]{border:1px solid rgba(128,128,128,.25);border-radius:12px;
+    padding:6px 8px;min-height:112px;background:rgba(128,128,128,.04);gap:.2rem}
+[class*="st-key-cellout-"]{opacity:.45}
+[class*="st-key-celltoday-"]{border:2px solid #4F8EF7;background:rgba(79,142,247,.08)}
+[class*="st-key-cell"] button{border:none;background:transparent;box-shadow:none;
+    min-height:1.7rem;padding:0 .3rem;justify-content:flex-start;width:auto}
+[class*="st-key-cell"] button p{font-weight:700;font-size:15px}
+[class*="st-key-cell"] button:hover{background:rgba(79,142,247,.15)}
+[class*="st-key-celltoday-"] button p{color:#4F8EF7}
+.dayhead{display:flex;align-items:center;gap:16px;margin:6px 0 14px}
+.dayhead .dn{font-size:48px;font-weight:800;line-height:1;color:#4F8EF7}
+.dayhead .dw{font-size:18px;font-weight:600}
+.dayhead .dc{font-size:13px;opacity:.6}
+.dh{font-weight:700;margin:18px 0 4px;font-size:15px}
+.ev{display:flex;gap:16px;align-items:center;padding:12px 16px;margin:10px 0;border-radius:12px;
+    background:rgba(128,128,128,.07);border:1px solid rgba(128,128,128,.18)}
+.ev-t{min-width:64px;text-align:center}
+.ev-t .s{font-size:20px;font-weight:700}
+.ev-t .e{font-size:12px;opacity:.6}
+.ev-b{flex:1}
+.ev .ti{font-size:16px;font-weight:600}
+.ev .badge{color:#fff;font-size:11px;font-weight:500;border-radius:999px;padding:1px 9px;margin-left:8px}
+.ev .no{font-size:13px;opacity:.7;margin-top:4px}
 </style>
 """
 
@@ -140,6 +162,7 @@ def replace_events(events):
     if events:
         db().table("events").insert([_to_db({**e, "id": uuid.uuid4().hex[:8]}) for e in events]).execute()
 
+
 def events_on(events, day):
     out = []
     for e in events:
@@ -156,33 +179,46 @@ def chip(e, with_time=True):
 
 
 # ---------- 檢視 ----------
-def event_line(e):
-    note = f" (備註:) {html.escape(e['note'])}" if e.get("note") else ""
-    return f"{e['start']}–{e['end']} {chip(e, False)}{note}"
+def event_card(e):
+    color = CATS.get(e["cat"], "#8E8E93")
+    rep = " · 🔁 每週" if e.get("repeat") == "每週" else ""
+    note = (f"<div class='no'>備註: {html.escape(e['note']).replace(chr(10), '<br>')}</div>"
+            if e.get("note") else "")
+    return (f"<div class='ev' style='border-left:6px solid {color}'>"
+            f"<div class='ev-t'><div class='s'>{e['start']}</div><div class='e'>{e['end']}</div></div>"
+            f"<div class='ev-b'><div class='ti'>{html.escape(e['title'])}"
+            f"<span class='badge' style='background:{color}'>{html.escape(e['cat'])}</span>{rep}</div>"
+            f"{note}</div></div>")
 
 
 def month_view(events, cur):
     for c, w in zip(st.columns(7), WEEKDAYS):
-        c.markdown(f"<div class='wd'>{w}</div>", unsafe_allow_html=True)
+        c.markdown(f"<div class='wd'>週{w}</div>", unsafe_allow_html=True)
     for week in calendar.Calendar(0).monthdatescalendar(cur.year, cur.month):
         for col, d in zip(st.columns(7), week):
-            with col:
+            kind = "celltoday" if d == date.today() else ("cellout" if d.month != cur.month else "cell")
+            with col, st.container(key=f"{kind}-{d.isoformat()}"):
                 label = f"{d.month}/{d.day}" if (d.month != cur.month or d.day == 1) else str(d.day)
-                if st.button(label, key=f"day-{d.isoformat()}", use_container_width=True,
-                             type="primary" if d == date.today() else "secondary"):
+                if st.button(label, key=f"day-{d.isoformat()}"):
                     st.session_state.selected = d
                     st.session_state.cur = d
                     st.rerun()
-                st.markdown("".join(chip(e) for e in events_on(events, d)), unsafe_allow_html=True)
+                evs = events_on(events, d)
+                html_ = "".join(chip(e) for e in evs[:3])
+                if len(evs) > 3:
+                    html_ += f"<span class='more'>+{len(evs) - 3} 更多</span>"
+                st.markdown(html_, unsafe_allow_html=True)
 
 
 def day_view(events, d):
-    st.subheader(f"{d.year} 年 {d.month} 月 {d.day} 日（週{WEEKDAYS[d.weekday()]}）")
     evs = events_on(events, d)
+    st.markdown(f"<div class='dayhead'><div class='dn'>{d.day}</div><div>"
+                f"<div class='dw'>{d.year} 年 {d.month} 月 · 週{WEEKDAYS[d.weekday()]}</div>"
+                f"<div class='dc'>共 {len(evs)} 項行程</div></div></div>", unsafe_allow_html=True)
     if not evs:
         st.info("這天沒有行程")
-    for e in evs:
-        st.markdown(event_line(e), unsafe_allow_html=True)
+        return
+    st.markdown("".join(event_card(e) for e in evs), unsafe_allow_html=True)
 
 
 def week_view(events, cur):
@@ -208,10 +244,11 @@ def list_view(events, cur):
     found = False
     for day in range(1, calendar.monthrange(cur.year, cur.month)[1] + 1):
         d = date(cur.year, cur.month, day)
-        for e in events_on(events, d):
+        evs = events_on(events, d)
+        if evs:
             found = True
-            st.markdown(f"**{d.month}/{d.day}（{WEEKDAYS[d.weekday()]}）** {event_line(e)}",
-                        unsafe_allow_html=True)
+            st.markdown(f"<div class='dh'>{d.month}/{d.day}（週{WEEKDAYS[d.weekday()]}）</div>"
+                        + "".join(event_card(e) for e in evs), unsafe_allow_html=True)
     if not found:
         st.info("本月沒有事件")
 
