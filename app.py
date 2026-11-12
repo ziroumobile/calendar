@@ -33,6 +33,7 @@ CSS = """
 .cal td.today{background:#eff6ff}
 .cal .d{font-weight:600;margin-bottom:2px}
 .cal td.today .d{color:#2563eb}
+.wd{text-align:center;font-weight:600;background:#f3f4f6;padding:4px;border-radius:4px}
 .chip{color:#fff;border-radius:4px;padding:1px 5px;margin:1px 0;font-size:11px;
       white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
 .wk td{height:34px}
@@ -155,17 +156,33 @@ def chip(e, with_time=True):
 
 
 # ---------- 檢視 ----------
+def event_line(e):
+    note = f" (備註:) {html.escape(e['note'])}" if e.get("note") else ""
+    return f"{e['start']}–{e['end']} {chip(e, False)}{note}"
+
+
 def month_view(events, cur):
-    rows = ["<table class='cal'><tr>" + "".join(f"<th>{w}</th>" for w in WEEKDAYS) + "</tr>"]
+    for c, w in zip(st.columns(7), WEEKDAYS):
+        c.markdown(f"<div class='wd'>{w}</div>", unsafe_allow_html=True)
     for week in calendar.Calendar(0).monthdatescalendar(cur.year, cur.month):
-        rows.append("<tr>")
-        for d in week:
-            cls = ("out " if d.month != cur.month else "") + ("today" if d == date.today() else "")
-            chips = "".join(chip(e) for e in events_on(events, d))
-            rows.append(f"<td class='{cls}'><div class='d'>{d.day}</div>{chips}</td>")
-        rows.append("</tr>")
-    rows.append("</table>")
-    st.markdown("".join(rows), unsafe_allow_html=True)
+        for col, d in zip(st.columns(7), week):
+            with col:
+                label = f"{d.month}/{d.day}" if (d.month != cur.month or d.day == 1) else str(d.day)
+                if st.button(label, key=f"day-{d.isoformat()}", use_container_width=True,
+                             type="primary" if d == date.today() else "secondary"):
+                    st.session_state.selected = d
+                    st.session_state.cur = d
+                    st.rerun()
+                st.markdown("".join(chip(e) for e in events_on(events, d)), unsafe_allow_html=True)
+
+
+def day_view(events, d):
+    st.subheader(f"{d.year} 年 {d.month} 月 {d.day} 日（週{WEEKDAYS[d.weekday()]}）")
+    evs = events_on(events, d)
+    if not evs:
+        st.info("這天沒有行程")
+    for e in evs:
+        st.markdown(event_line(e), unsafe_allow_html=True)
 
 
 def week_view(events, cur):
@@ -193,8 +210,7 @@ def list_view(events, cur):
         d = date(cur.year, cur.month, day)
         for e in events_on(events, d):
             found = True
-            st.markdown(f"**{d.month}/{d.day}（{WEEKDAYS[d.weekday()]}）** {e['start']}–{e['end']} "
-                        f"{chip(e, False)} {html.escape(e.get('note', ''))}",
+            st.markdown(f"**{d.month}/{d.day}（{WEEKDAYS[d.weekday()]}）** {event_line(e)}",
                         unsafe_allow_html=True)
     if not found:
         st.info("本月沒有事件")
@@ -212,12 +228,13 @@ if "cur" not in st.session_state:
 cur = st.session_state.cur
 
 st.markdown(CSS, unsafe_allow_html=True)
-st.title("📅 行事曆")
+if not st.session_state.get("selected"):
+    st.title("📅 行事曆")
 
 with st.sidebar:
     st.caption(f"👤 {st.session_state.user}")
     if st.button("登出", use_container_width=True):
-        for k in ("user", "cur"):
+        for k in ("user", "cur", "selected"):
             st.session_state.pop(k, None)
         st.rerun()
     st.divider()
@@ -242,6 +259,8 @@ with st.sidebar:
                            "end": t2.strftime("%H:%M"), "cat": cat,
                            "repeat": repeat, "note": note})
                 st.session_state.cur = d
+                if st.session_state.get("selected"):
+                    st.session_state.selected = d
                 st.rerun()
 
     st.divider()
@@ -268,6 +287,14 @@ with st.sidebar:
             st.rerun()
         except (json.JSONDecodeError, AssertionError, KeyError, TypeError):
             st.error("檔案格式錯誤")
+
+sel = st.session_state.get("selected")
+if sel:
+    if st.button("← 返回"):
+        st.session_state.selected = None
+        st.rerun()
+    day_view(events, sel)
+    st.stop()
 
 view = st.radio("檢視", ["月", "週", "清單"], horizontal=True, label_visibility="collapsed")
 step = {"月": None, "週": 7, "清單": None}[view]
