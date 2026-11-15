@@ -313,6 +313,17 @@ def finish_add(ev):
     st.rerun()
 
 
+@st.dialog("⚠️ 時段重複")
+def confirm_dialog(ev, text):
+    st.write(f"與 {text} 時段重複。")
+    st.write(f"確認要新增「{ev['title']}」嗎？")
+    b1, b2 = st.columns(2)
+    if b1.button("仍要新增", use_container_width=True, type="primary"):
+        finish_add(ev)
+    if b2.button("取消", use_container_width=True):
+        st.rerun()
+
+
 def chip(e, with_time=True):
     t = f'{e["start"]} ' if with_time else ""
     return (f'<span class="chip" style="background:{CATS.get(e["cat"], "#8E8E93")}" '
@@ -446,17 +457,9 @@ with st.sidebar:
                 else:
                     finish_add(new_ev)
 
-    pend = st.session_state.get("pending")
+    pend = st.session_state.pop("pending", None)  # 取出即清除，關掉視窗不會再跳
     if pend:
-        st.warning(f"⚠️ 與 {conflict_text(find_conflicts(pend, events))} 時段重複，確認要新增"
-                   f"「{pend['title']}」嗎？")
-        b1, b2 = st.columns(2)
-        if b1.button("仍要新增", use_container_width=True, type="primary"):
-            st.session_state.pop("pending")
-            finish_add(pend)
-        if b2.button("取消", use_container_width=True):
-            st.session_state.pop("pending")
-            st.rerun()
+        confirm_dialog(pend, conflict_text(find_conflicts(pend, events)))
 
     st.divider()
     st.header("刪除事件")
