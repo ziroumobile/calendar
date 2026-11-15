@@ -2,9 +2,11 @@
 執行: streamlit run app.py
 """
 import calendar
+import csv
 import hashlib
 import hmac
 import html
+import io
 import json
 import os
 import uuid
@@ -21,6 +23,7 @@ CATS = {
     "個人": "#30A46C",
     "其他": "#8E8E93",
 }
+REPEATS = ["無", "每天", "每週", "每月", "每年"]
 WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"]
 HOURS = range(7, 23)
 
@@ -135,13 +138,15 @@ def login_page():
 # ---------- 資料（存在 Supabase，每個帳號各自一份） ----------
 def _to_app(r):
     return {"id": r["id"], "title": r["title"], "date": r["date"], "start": r["start_time"][:5],
-            "end": r["end_time"][:5], "cat": r["cat"], "repeat": r["repeat"], "note": r["note"] or ""}
+            "end": r["end_time"][:5], "cat": r["cat"], "repeat": r["repeat"],
+            "until": r.get("repeat_until") or "", "note": r["note"] or ""}
 
 
 def _to_db(e):
     return {"id": e["id"], "username": st.session_state.user, "title": e["title"], "date": e["date"],
             "start_time": e["start"], "end_time": e["end"], "cat": e["cat"],
-            "repeat": e.get("repeat", "無"), "note": e.get("note", "")}
+            "repeat": e.get("repeat", "無"), "repeat_until": e.get("until") or None,
+            "note": e.get("note", "")}
 
 
 def load_events():
@@ -163,13 +168,114 @@ def replace_events(events):
         db().table("events").insert([_to_db({**e, "id": uuid.uuid4().hex[:8]}) for e in events]).execute()
 
 
+def append_events(events):
+    if events:
+        db().table("events").insert([_to_db({**e, "id": uuid.uuid4().hex[:8]}) for e in events]).execute()
+
+
+# ---------- 重複提醒（同日期、同時間段重複） ----------
+def occurs_on(e, day):
+    """事件 e 是否在 day 這天出現。每月/每年遇到沒有該日（如 31 號、2/29）時取月底。"""
+    d0 = date.fromisoformat(e["date"])
+    if day < d0:
+        return False
+    if e.get("until") and day > date.fromisoformat(e["until"]):
+        return False
+    if day == d0:
+        return True
+    rep = e.get("repeat", "無")
+    last = calendar.monthrange(day.year, day.month)[1]
+    if rep == "每天":
+        return True
+    if rep == "每週":
+        return (day - d0).days % 7 == 0
+    if rep == "每月":
+        return day.day == min(d0.day, last)
+    if rep == "每年":
+        return day.month == d0.month and day.day == min(d0.day, last)
+    return False
+
+
 def events_on(events, day):
-    out = []
-    for e in events:
-        d0 = date.fromisoformat(e["date"])
-        if d0 == day or (e.get("repeat") == "每週" and d0 <= day and (day - d0).days % 7 == 0):
-            out.append(e)
-    return sorted(out, key=lambda e: e["start"])
+    return sorted((e for e in events if occurs_on(e, day)), key=lambda e: e["start"])
+
+
+# ---------- CSV 匯入 / 匯出 ----------
+CSV_COLS = ["title", "date", "start", "end", "cat", "repeat", "until", "note"]
+CSV_ALIAS = {"標題": "title", "日期": "date", "開始": "start", "結束": "end",
+             "分類": "cat", "重複": "repeat", "重複至": "until", "備註": "note"}
+
+
+def export_csv(events):
+    """UTF-8 with BOM：Excel 開啟中文不會亂碼。"""
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=CSV_COLS, extrasaction="ignore")
+    w.writeheader()
+    for e in sorted(events, key=lambda e: (e["date"], e["start"])):
+        w.writerow({k: e.get(k, "") or "" for k in CSV_COLS})
+    return buf.getvalue().encode("utf-8-sig")
+
+
+def _parse(value, fmts):
+    for f in fmts:
+        try:
+            return datetime.strptime(value.strip(), f)
+        except ValueError:
+            pass
+    raise ValueError(f"格式不正確：{value}")
+
+
+def _date(v):
+    return _parse(v, ("%Y-%m-%d", "%Y/%m/%d")).date()
+
+
+def _time(v):
+    return _parse(v, ("%H:%M", "%H:%M:%S")).strftime("%H:%M")
+
+
+def parse_csv(data, existing=()):
+    """回傳 (新事件, 錯誤訊息)。與既有事件完全相同者略過。"""
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = data.decode("big5", errors="replace")  # 舊版 Excel 的繁中編碼
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        return [], ["檔案是空的"]
+    reader.fieldnames = [CSV_ALIAS.get(f.strip(), f.strip().lower()) for f in reader.fieldnames]
+    missing = {"title", "date", "start", "end"} - set(reader.fieldnames)
+    if missing:
+        return [], [f"缺少必要欄位：{', '.join(sorted(missing))}"]
+    key = lambda e: (e["title"], e["date"], e["start"], e["end"], e["repeat"])
+    seen = {key(e) for e in existing}
+    added, errors = [], []
+    for n, row in enumerate(reader, start=2):  # 第 1 列是欄位標題
+        try:
+            title = (row.get("title") or "").strip()
+            if not title:
+                raise ValueError("標題不可空白")
+            d, s, t = _date(row["date"]), _time(row["start"]), _time(row["end"])
+            if t <= s:
+                raise ValueError("結束時間需晚於開始時間")
+            rep = (row.get("repeat") or "無").strip() or "無"
+            if rep not in REPEATS:
+                raise ValueError(f"重複需為 {'/'.join(REPEATS)}")
+            until = (row.get("until") or "").strip()
+            until = _date(until).isoformat() if until else ""
+            if until and until < d.isoformat():
+                raise ValueError("重複至不可早於日期")
+            cat = (row.get("cat") or "").strip()
+            ev = {"title": title, "date": d.isoformat(), "start": s, "end": t,
+                  "cat": cat if cat in CATS else "其他", "repeat": rep, "until": until,
+                  "note": (row.get("note") or "").strip()}
+        except (ValueError, TypeError) as ex:
+            errors.append(f"第 {n} 列：{ex}")
+            continue
+        if key(ev) in seen:
+            continue
+        seen.add(key(ev))
+        added.append(ev)
+    return added, errors
 
 
 def chip(e, with_time=True):
@@ -181,7 +287,7 @@ def chip(e, with_time=True):
 # ---------- 檢視 ----------
 def event_card(e):
     color = CATS.get(e["cat"], "#8E8E93")
-    rep = " · 🔁 每週" if e.get("repeat") == "每週" else ""
+    rep = f" · 🔁 {e['repeat']}" if e.get("repeat", "無") != "無" else ""
     note = (f"<div class='no'>備註: {html.escape(e['note']).replace(chr(10), '<br>')}</div>"
             if e.get("note") else "")
     return (f"<div class='ev' style='border-left:6px solid {color}'>"
@@ -283,18 +389,22 @@ with st.sidebar:
         t1 = c1.time_input("開始", datetime.strptime("09:00", "%H:%M").time())
         t2 = c2.time_input("結束", datetime.strptime("10:00", "%H:%M").time())
         cat = st.selectbox("分類", list(CATS))
-        repeat = st.selectbox("重複", ["無", "每週"])
+        repeat = st.selectbox("重複（同日期、同時段）", REPEATS)
+        until = st.date_input("重複至（可留空＝一直重複）", value=None)
         note = st.text_area("備註", height=70)
         if st.form_submit_button("新增", use_container_width=True):
             if not title.strip():
                 st.error("請輸入標題")
             elif t2 <= t1:
                 st.error("結束時間需晚於開始時間")
+            elif until and until < d:
+                st.error("「重複至」不可早於日期")
             else:
                 add_event({"id": uuid.uuid4().hex[:8], "title": title.strip(),
                            "date": d.isoformat(), "start": t1.strftime("%H:%M"),
                            "end": t2.strftime("%H:%M"), "cat": cat,
-                           "repeat": repeat, "note": note})
+                           "repeat": repeat, "until": until.isoformat() if until else "",
+                           "note": note})
                 st.session_state.cur = d
                 if st.session_state.get("selected"):
                     st.session_state.selected = d
@@ -303,7 +413,8 @@ with st.sidebar:
     st.divider()
     st.header("刪除事件")
     if events:
-        labels = {e["id"]: f'{e["date"]} {e["start"]} {e["title"]}' for e in
+        labels = {e["id"]: f'{e["date"]} {e["start"]} {e["title"]}'
+                  + (f' 🔁{e["repeat"]}' if e["repeat"] != "無" else "") for e in
                   sorted(events, key=lambda e: (e["date"], e["start"]))}
         pick = st.selectbox("選擇事件", list(labels), format_func=labels.get)
         if st.button("刪除", use_container_width=True):
@@ -313,17 +424,33 @@ with st.sidebar:
         st.caption("目前沒有事件")
 
     st.divider()
-    st.download_button("匯出 JSON", json.dumps(events, ensure_ascii=False, indent=2),
-                       "events.json", use_container_width=True)
-    up = st.file_uploader("匯入 JSON", type="json")
-    if up and st.button("匯入並覆蓋", use_container_width=True):
+    st.header("匯入 / 匯出")
+    st.download_button("匯出 CSV", export_csv(events), "events.csv", "text/csv",
+                       use_container_width=True)
+    up_csv = st.file_uploader("匯入 CSV（新增，不覆蓋）", type="csv")
+    if up_csv and st.button("匯入 CSV", use_container_width=True):
+        added, errors = parse_csv(up_csv.getvalue(), events)
         try:
-            data = json.load(up)
-            assert isinstance(data, list)
-            replace_events(data)
-            st.rerun()
-        except (json.JSONDecodeError, AssertionError, KeyError, TypeError):
-            st.error("檔案格式錯誤")
+            append_events(added)
+            st.success(f"成功匯入 {len(added)} 筆")
+        except Exception as ex:  # 資料庫寫入失敗
+            st.error(f"寫入失敗：{ex}")
+        for m in errors[:10]:
+            st.warning(m)
+        if len(errors) > 10:
+            st.warning(f"另有 {len(errors) - 10} 筆錯誤未顯示")
+    with st.expander("JSON（舊格式）"):
+        st.download_button("匯出 JSON", json.dumps(events, ensure_ascii=False, indent=2),
+                           "events.json", use_container_width=True)
+        up = st.file_uploader("匯入 JSON", type="json")
+        if up and st.button("匯入並覆蓋", use_container_width=True):
+            try:
+                data = json.load(up)
+                assert isinstance(data, list)
+                replace_events(data)
+                st.rerun()
+            except (json.JSONDecodeError, AssertionError, KeyError, TypeError):
+                st.error("檔案格式錯誤")
 
 sel = st.session_state.get("selected")
 if sel:
