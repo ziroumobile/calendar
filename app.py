@@ -200,6 +200,33 @@ def events_on(events, day):
     return sorted((e for e in events if occurs_on(e, day)), key=lambda e: e["start"])
 
 
+def find_conflicts(new, events, horizon_days=366):
+    """回傳 new 與既有事件時段重疊的 [(日期, 事件)]。
+    重複事件只檢查到「重複至」或一年內；首尾相接（10:00 結束、10:00 開始）不算衝突。"""
+    d0 = date.fromisoformat(new["date"])
+    end = d0 + timedelta(days=horizon_days)
+    if new.get("until"):
+        end = min(end, date.fromisoformat(new["until"]))
+    out, day = [], d0
+    while day <= end:
+        if occurs_on(new, day):
+            out += [(day, e) for e in events_on(events, day)
+                    if new["start"] < e["end"] and e["start"] < new["end"]]
+        day += timedelta(days=1)
+    return out
+
+
+def conflict_text(conflicts, limit=3):
+    """同一個事件只列一次（顯示第一個衝突日期），多的用「等 N 項」帶過。"""
+    firsts = {}
+    for day, e in conflicts:
+        firsts.setdefault(e["id"], (day, e))
+    items = [f"「{e['title']}」（{d.month}/{d.day} {e['start']}–{e['end']}）"
+             for d, e in list(firsts.values())[:limit]]
+    more = f" 等 {len(firsts)} 項" if len(firsts) > limit else ""
+    return "、".join(items) + more
+
+
 # ---------- CSV 匯入 / 匯出 ----------
 CSV_COLS = ["title", "date", "start", "end", "cat", "repeat", "until", "note"]
 CSV_ALIAS = {"標題": "title", "日期": "date", "開始": "start", "結束": "end",
@@ -276,6 +303,14 @@ def parse_csv(data, existing=()):
         seen.add(key(ev))
         added.append(ev)
     return added, errors
+
+
+def finish_add(ev):
+    add_event(ev)
+    st.session_state.cur = date.fromisoformat(ev["date"])
+    if st.session_state.get("selected"):
+        st.session_state.selected = st.session_state.cur
+    st.rerun()
 
 
 def chip(e, with_time=True):
@@ -377,7 +412,7 @@ if not st.session_state.get("selected"):
 with st.sidebar:
     st.caption(f"👤 {st.session_state.user}")
     if st.button("登出", use_container_width=True):
-        for k in ("user", "cur", "selected"):
+        for k in ("user", "cur", "selected", "pending"):
             st.session_state.pop(k, None)
         st.rerun()
     st.divider()
@@ -400,15 +435,28 @@ with st.sidebar:
             elif until and until < d:
                 st.error("「重複至」不可早於日期")
             else:
-                add_event({"id": uuid.uuid4().hex[:8], "title": title.strip(),
-                           "date": d.isoformat(), "start": t1.strftime("%H:%M"),
-                           "end": t2.strftime("%H:%M"), "cat": cat,
-                           "repeat": repeat, "until": until.isoformat() if until else "",
-                           "note": note})
-                st.session_state.cur = d
-                if st.session_state.get("selected"):
-                    st.session_state.selected = d
-                st.rerun()
+                new_ev = {"id": uuid.uuid4().hex[:8], "title": title.strip(),
+                          "date": d.isoformat(), "start": t1.strftime("%H:%M"),
+                          "end": t2.strftime("%H:%M"), "cat": cat,
+                          "repeat": repeat, "until": until.isoformat() if until else "",
+                          "note": note}
+                if find_conflicts(new_ev, events):
+                    st.session_state.pending = new_ev  # 先警告，等使用者確認
+                    st.rerun()
+                else:
+                    finish_add(new_ev)
+
+    pend = st.session_state.get("pending")
+    if pend:
+        st.warning(f"⚠️ 與 {conflict_text(find_conflicts(pend, events))} 時段重複，確認要新增"
+                   f"「{pend['title']}」嗎？")
+        b1, b2 = st.columns(2)
+        if b1.button("仍要新增", use_container_width=True, type="primary"):
+            st.session_state.pop("pending")
+            finish_add(pend)
+        if b2.button("取消", use_container_width=True):
+            st.session_state.pop("pending")
+            st.rerun()
 
     st.divider()
     st.header("刪除事件")
