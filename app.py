@@ -14,6 +14,8 @@ from datetime import date, datetime, timedelta
 
 import streamlit as st
 
+from schedule_import import PARSERS, decode_bytes, default_semester
+
 st.set_page_config(page_title="行事曆", page_icon="📅", layout="wide")
 
 CATS = {
@@ -26,6 +28,7 @@ CATS = {
 REPEATS = ["無", "每天", "每週", "每月", "每年"]
 WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"]
 HOURS = range(7, 23)
+IMPORT_PREFIX = "tt-"  # 匯入課表產生的事件 id 前綴，重新匯入時用來辨識並取代
 
 CSS = """
 <style>
@@ -171,6 +174,28 @@ def replace_events(events):
 def append_events(events):
     if events:
         db().table("events").insert([_to_db({**e, "id": uuid.uuid4().hex[:8]}) for e in events]).execute()
+
+
+def import_courses(sessions, start, end):
+    """把解析出的課程寫成「每週重複、到學期結束日為止」的事件，並取代先前匯入的課表。"""
+    user = st.session_state.user
+    rows = []
+    for s in sessions:
+        first = start + timedelta(days=(s["weekday"] - start.weekday()) % 7)
+        if first > end:
+            continue
+        note = "\n".join(x for x in (f"課號：{s['code']}", f"教師：{s['teacher']}" if s["teacher"] else "",
+                                     f"教室：{s['room']}" if s["room"] else "") if x)
+        rows.append(_to_db({"id": IMPORT_PREFIX + uuid.uuid4().hex[:8], "title": s["name"],
+                            "date": first.isoformat(), "start": s["start"], "end": s["end"],
+                            "cat": "課程", "repeat": "每週", "note": note, "until": end.isoformat()}))
+    old = [r["id"] for r in db().table("events").select("id").eq("username", user)
+           .like("id", IMPORT_PREFIX + "%").execute().data]
+    if rows:
+        db().table("events").insert(rows).execute()  # 先寫入新的；失敗時舊課表不會被刪掉
+    if old:
+        db().table("events").delete().eq("username", user).in_("id", old).execute()
+    return len(rows)
 
 
 # ---------- 重複提醒（同日期、同時間段重複） ----------
@@ -333,7 +358,9 @@ def chip(e, with_time=True):
 # ---------- 檢視 ----------
 def event_card(e):
     color = CATS.get(e["cat"], "#8E8E93")
-    rep = f" · 🔁 {e['repeat']}" if e.get("repeat", "無") != "無" else ""
+    rep = ""
+    if e.get("repeat", "無") != "無":
+        rep = f" · 🔁 {e['repeat']}" + (f"（至 {e['until']}）" if e.get("until") else "")
     note = (f"<div class='no'>備註: {html.escape(e['note']).replace(chr(10), '<br>')}</div>"
             if e.get("note") else "")
     return (f"<div class='ev' style='border-left:6px solid {color}'>"
@@ -504,6 +531,47 @@ def free_time_view(my_events):
     st.markdown("".join(html_), unsafe_allow_html=True)
 
 
+# ---------- 課表匯入 ----------
+def import_panel():
+    with st.expander("📥 匯入課表"):
+        school = st.selectbox("學校", list(PARSERS), help="目前僅支援北科大，其他學校之後再加入")
+        st.caption("北科大：登入「網路加退選系統」→「顯示課表」→ 另存網頁（.html）上傳，"
+                   "或檢視原始碼全選後貼在下方。")
+        f = st.file_uploader("上傳課表 HTML", type=["html", "htm", "txt"], key="tt_file")
+        pasted = st.text_area("或貼上 HTML 原始碼", height=80, key="tt_paste")
+        raw = decode_bytes(f.getvalue()) if f else (pasted if pasted.strip() else None)
+        if not raw:
+            return
+        sessions, meta = PARSERS[school](raw)
+        if not sessions:
+            st.error("找不到課程，請確認是「顯示課表」頁面的內容")
+            return
+        n_course = len({s["code"] for s in sessions})
+        st.success(f"解析到 {n_course} 門課、共 {len(sessions)} 個上課時段")
+        st.dataframe(
+            [{"星期": f"週{WEEKDAYS[s['weekday']]}", "時間": f"{s['start']}-{s['end']}",
+              "課程": s["name"], "教室": s["room"]} for s in sessions],
+            hide_index=True, use_container_width=True)
+        d0, d1 = default_semester(meta)
+        tag = f"{meta.get('year')}-{meta.get('sem')}"
+        start = st.date_input("學期開始日", d0, key=f"tt_s_{tag}")
+        end = st.date_input("學期結束日", d1, key=f"tt_e_{tag}")
+        st.caption("課程會每週重複到結束日為止；重新匯入會取代先前匯入的課表。")
+        if st.button("匯入課表", use_container_width=True):
+            if end < start:
+                st.error("結束日不可早於開始日")
+                return
+            try:
+                import_courses(sessions, start, end)
+            except Exception as ex:  # 最常見原因：events 資料表還沒有 repeat_until 欄位
+                st.error(f"匯入失敗：請確認 Supabase 的 events 資料表有 repeat_until 欄位。（{ex}）")
+                return
+            today = date.today()
+            if not start <= today <= end:
+                st.session_state.cur = start
+            st.rerun()
+
+
 # ---------- 主程式 ----------
 init_test_user()
 if "user" not in st.session_state:
@@ -559,6 +627,9 @@ with st.sidebar:
     pend = st.session_state.pop("pending", None)  # 取出即清除，關掉視窗不會再跳
     if pend:
         confirm_dialog(pend, conflict_text(find_conflicts(pend, events)))
+
+    st.divider()
+    import_panel()
 
     st.divider()
     on = st.session_state.get("delete_mode", False)
