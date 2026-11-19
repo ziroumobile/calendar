@@ -370,7 +370,16 @@ def day_view(events, d):
     if not evs:
         st.info("這天沒有行程")
         return
-    st.markdown("".join(event_card(e) for e in evs), unsafe_allow_html=True)
+    if not st.session_state.get("delete_mode"):
+        st.markdown("".join(event_card(e) for e in evs), unsafe_allow_html=True)
+        return
+    st.warning("清除模式：請選擇要清除的事件")
+    for e in evs:
+        st.markdown(event_card(e), unsafe_allow_html=True)
+        series = e.get("repeat", "無") != "無"
+        if st.button("🗑 刪除整個重複系列" if series else "🗑 刪除", key=f"del-{e['id']}"):
+            delete_event(e["id"])
+            st.rerun()
 
 
 def week_view(events, cur):
@@ -405,6 +414,96 @@ def list_view(events, cur):
         st.info("本月沒有事件")
 
 
+# ---------- 共同空閒時段 ----------
+def to_min(t):
+    h, m = t.split(":")[:2]
+    return int(h) * 60 + int(m)
+
+
+def fmt_min(m):
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
+def fmt_dur(m):
+    h, r = divmod(m, 60)
+    return (f"{h} 小時" if h else "") + (f" {r} 分" if r else "")
+
+
+def common_free(people, d1, d2, w1, w2, min_len):
+    """people: 多份事件清單。回傳 [(日期, 起(分), 迄(分))]：所有人在 [w1, w2] 內都沒事、
+    且長度 >= min_len 的時段（每份清單都會展開重複事件）。"""
+    out, day = [], d1
+    while day <= d2:
+        busy = sorted((max(to_min(e["start"]), w1), min(to_min(e["end"]), w2))
+                      for evs in people for e in events_on(evs, day))
+        cursor, slots = w1, []
+        for s, e in busy:
+            if e <= s:  # 完全在時間窗之外
+                continue
+            if s - cursor >= min_len:
+                slots.append((cursor, s))
+            cursor = max(cursor, e)
+        if w2 - cursor >= min_len:
+            slots.append((cursor, w2))
+        out += [(day, a, b) for a, b in slots]
+        day += timedelta(days=1)
+    return out
+
+
+def free_time_view(my_events):
+    st.subheader("🤝 共同空閒時段")
+    st.caption("匯入其他人用本系統匯出的 CSV（不限人數），檔案只在這次使用中處理，不會存進資料庫。")
+    files = st.file_uploader("匯入其他人的行事曆 CSV（可多選）", type="csv",
+                             accept_multiple_files=True)
+    people = {"我": my_events}
+    for f in files or []:
+        name, n = os.path.splitext(f.name)[0], 2
+        while name in people:  # 檔名重複時加編號
+            name, n = f"{os.path.splitext(f.name)[0]}({n})", n + 1
+        evs, errors = parse_csv(f.getvalue())
+        people[name] = evs
+        for m in errors[:3]:
+            st.warning(f"{f.name}：{m}")
+    picked = st.multiselect("參與的人", list(people), default=list(people))
+    if not picked:
+        st.info("請至少選擇一位")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    dr = c1.date_input("日期範圍", value=(date.today(), date.today() + timedelta(days=6)))
+    w1 = c2.time_input("每天最早", datetime.strptime("08:00", "%H:%M").time())
+    w2 = c2.time_input("每天最晚", datetime.strptime("22:00", "%H:%M").time())
+    min_len = c3.selectbox("最短空檔（分鐘）", [30, 60, 90, 120, 180], index=1)
+    if len(dr) < 2:
+        st.info("請選擇範圍的結束日期")
+        return
+    d1, d2 = dr
+    if (d2 - d1).days > 92:
+        st.error("日期範圍最多 93 天")
+        return
+    a, b = to_min(w1.strftime("%H:%M")), to_min(w2.strftime("%H:%M"))
+    if b <= a:
+        st.error("「最晚」需晚於「最早」")
+        return
+
+    slots = common_free([people[p] for p in picked], d1, d2, a, b, min_len)
+    st.markdown(f"**{len(picked)} 人**（{'、'.join(picked)}）｜{d1} ～ {d2}｜"
+                f"共 **{len(slots)}** 個共同空閒時段")
+    if not slots:
+        st.info("這個範圍內沒有大家都有空的時段，試試縮短最短空檔或放寬每天時間")
+        return
+    html_, last = [], None
+    for d, s, e in slots:
+        if d != last:
+            html_.append(f"<div class='dh'>{d.month}/{d.day}（週{WEEKDAYS[d.weekday()]}）</div>")
+            last = d
+        html_.append(
+            "<div class='ev' style='border-left:6px solid #30A46C'>"
+            f"<div class='ev-t'><div class='s'>{fmt_min(s)}</div><div class='e'>{fmt_min(e)}</div></div>"
+            f"<div class='ev-b'><div class='ti'>全員有空 · {fmt_dur(e - s)}</div></div></div>")
+    st.markdown("".join(html_), unsafe_allow_html=True)
+
+
 # ---------- 主程式 ----------
 init_test_user()
 if "user" not in st.session_state:
@@ -423,7 +522,7 @@ if not st.session_state.get("selected"):
 with st.sidebar:
     st.caption(f"👤 {st.session_state.user}")
     if st.button("登出", use_container_width=True):
-        for k in ("user", "cur", "selected", "pending"):
+        for k in ("user", "cur", "selected", "pending", "delete_mode"):
             st.session_state.pop(k, None)
         st.rerun()
     st.divider()
@@ -462,17 +561,11 @@ with st.sidebar:
         confirm_dialog(pend, conflict_text(find_conflicts(pend, events)))
 
     st.divider()
-    st.header("刪除事件")
-    if events:
-        labels = {e["id"]: f'{e["date"]} {e["start"]} {e["title"]}'
-                  + (f' 🔁{e["repeat"]}' if e["repeat"] != "無" else "") for e in
-                  sorted(events, key=lambda e: (e["date"], e["start"]))}
-        pick = st.selectbox("選擇事件", list(labels), format_func=labels.get)
-        if st.button("刪除", use_container_width=True):
-            delete_event(pick)
-            st.rerun()
-    else:
-        st.caption("目前沒有事件")
+    on = st.session_state.get("delete_mode", False)
+    if st.button("✅ 結束清除模式" if on else "🗑 清除事件", use_container_width=True,
+                 type="primary" if on else "secondary"):
+        st.session_state.delete_mode = not on
+        st.rerun()
 
     st.divider()
     st.header("匯入 / 匯出")
@@ -511,7 +604,13 @@ if sel:
     day_view(events, sel)
     st.stop()
 
-view = st.radio("檢視", ["月", "週", "清單"], horizontal=True, label_visibility="collapsed")
+if st.session_state.get("delete_mode"):
+    st.warning("🗑 清除模式：點選日期，進入當日後選擇要清除的事件")
+view = st.radio("檢視", ["月", "週", "清單", "共同空閒"], horizontal=True,
+                label_visibility="collapsed")
+if view == "共同空閒":
+    free_time_view(events)
+    st.stop()
 step = {"月": None, "週": 7, "清單": None}[view]
 
 n1, n2, n3, n4 = st.columns([1, 1, 1, 5])
