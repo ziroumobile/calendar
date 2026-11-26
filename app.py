@@ -600,29 +600,6 @@ def free_time_view(my_events):
     st.markdown("".join(html_), unsafe_allow_html=True)
 
 
-# ---------- 放假設定 ----------
-@st.dialog("🏖 放假設定")
-def holiday_dialog(events, cur):
-    st.caption("放假日的行程以灰底顯示，且不計入衝突檢查與共同空閒。單日也可在當天頁面設定。")
-    rng = st.date_input("放假日期（可選一段）", (cur, cur), key="hol_range")
-    days = list(rng) if isinstance(rng, (tuple, list)) else [rng]
-    if len(days) < 1:
-        return
-    a, b = days[0], days[-1]
-    span = [a + timedelta(days=i) for i in range((b - a).days + 1)]
-    if len(span) > 120:
-        st.error("一次最多設定 120 天")
-        return
-    if st.button("標為放假", use_container_width=True, type="primary"):
-        set_holidays(span, events)
-        st.session_state.cur = a
-        st.toast(f"已標為放假：{len(span)} 天")
-        st.rerun()
-    if st.button("取消這段放假", use_container_width=True):
-        clear_holidays(span, events)
-        st.rerun()
-
-
 # ---------- 課表匯入 ----------
 @st.dialog("📥 匯入課表", width="large")
 def import_dialog():
@@ -711,9 +688,16 @@ def add_dialog(cur, events):
                     finish_add(new_ev)
 
 
-# ---------- 匯入 / 匯出 ----------
-@st.dialog("⇅ 匯入 / 匯出")
-def io_dialog(events):
+# ---------- 設定（匯入 / 匯出、登出） ----------
+@st.dialog("⚙ 設定")
+def settings_dialog(events):
+    st.caption(f"👤 目前帳號：{st.session_state.user}")
+    if st.button("登出", use_container_width=True):
+        for k in ("user", "cur", "selected", "pending", "delete_mode"):
+            st.session_state.pop(k, None)
+        st.rerun()
+    st.divider()
+    st.subheader("匯入 / 匯出")
     st.download_button("匯出 CSV", export_csv(events), "events.csv", "text/csv",
                        use_container_width=True)
     up_csv = st.file_uploader("匯入 CSV（新增，不覆蓋）", type="csv")
@@ -761,28 +745,25 @@ st.markdown(CSS, unsafe_allow_html=True)
 from mobile_fix import inject_mobile_css
 inject_mobile_css()
 sel = st.session_state.get("selected")
-if not sel:
-    st.title("📅 行事曆")
 
-# 工具列：原本側邊欄的功能都收進這裡（新增 / 匯入 / 放假 / 清除 / 匯入匯出 / 登出）
+# 右上角設定鈕（匯入 / 匯出、登出）；放假只在「點進日期」的當天頁面設定
+with st.container(key="topbar"):
+    top_l, top_r = st.columns([9, 1])
+    if not sel:
+        top_l.title("📅 行事曆")
+    if top_r.button("⚙", use_container_width=True, help="設定：匯入 / 匯出、登出"):
+        settings_dialog(events)
+
 with st.container(key="toolbar"):
-    tb = st.columns(6)
+    tb = st.columns(3)
     if tb[0].button("➕ 新增", use_container_width=True):
         add_dialog(cur, events)
     if tb[1].button("📥 課表", use_container_width=True):
         import_dialog()
-    if tb[2].button("🏖 放假", use_container_width=True):
-        holiday_dialog(events, cur)
     on = st.session_state.get("delete_mode", False)
-    if tb[3].button("✅ 結束清除" if on else "🗑 清除", use_container_width=True,
+    if tb[2].button("✅ 結束清除" if on else "🗑 清除", use_container_width=True,
                     type="primary" if on else "secondary"):
         st.session_state.delete_mode = not on
-        st.rerun()
-    if tb[4].button("⇅ 匯入匯出", use_container_width=True):
-        io_dialog(events)
-    if tb[5].button("👤 登出", use_container_width=True, help=f"目前帳號：{st.session_state.user}"):
-        for k in ("user", "cur", "selected", "pending", "delete_mode"):
-            st.session_state.pop(k, None)
         st.rerun()
 
 pend = st.session_state.pop("pending", None)  # 取出即清除，關掉視窗不會再跳

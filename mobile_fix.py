@@ -17,6 +17,10 @@ MOBILE_CSS = f"""
 @media (max-width: 640px) {{
   {_ROWS} {{flex-direction:row !important;flex-wrap:nowrap !important;gap:2px !important}}
   {_COLS} {{min-width:0 !important;width:0 !important;flex:1 1 0 !important}}
+  .st-key-topbar [data-testid="stHorizontalBlock"] {{flex-direction:row !important;flex-wrap:nowrap !important;gap:4px !important}}
+  .st-key-topbar [data-testid="stColumn"] {{min-width:0 !important;width:auto !important;flex:1 1 auto !important}}
+  .st-key-topbar [data-testid="stColumn"]:last-child {{flex:0 0 48px !important}}
+  .st-key-topbar h1 {{font-size:1.6rem !important}}
   {_TB} {{flex-direction:row !important;flex-wrap:wrap !important;gap:4px !important}}
   {_TB} > [data-testid="stColumn"] {{min-width:0 !important;width:auto !important;flex:1 1 30% !important}}
   {_VR} {{flex-direction:row !important;flex-wrap:wrap !important;gap:4px !important}}
