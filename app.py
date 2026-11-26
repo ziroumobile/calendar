@@ -584,6 +584,8 @@ if "cur" not in st.session_state:
 cur = st.session_state.cur
 
 st.markdown(CSS, unsafe_allow_html=True)
+from mobile_fix import inject_mobile_css
+inject_mobile_css()
 if not st.session_state.get("selected"):
     st.title("📅 行事曆")
 
