@@ -601,106 +601,86 @@ def free_time_view(my_events):
 
 
 # ---------- 放假設定 ----------
-def holiday_panel(events, cur):
-    with st.expander("🏖 放假設定"):
-        st.caption("放假日的行程以灰底顯示，且不計入衝突檢查與共同空閒。單日也可在當天頁面設定。")
-        rng = st.date_input("放假日期（可選一段）", (cur, cur), key="hol_range")
-        days = list(rng) if isinstance(rng, (tuple, list)) else [rng]
-        if len(days) < 1:
-            return
-        a, b = days[0], days[-1]
-        span = [a + timedelta(days=i) for i in range((b - a).days + 1)]
-        if len(span) > 120:
-            st.error("一次最多設定 120 天")
-            return
-        if st.button("標為放假", use_container_width=True):
-            set_holidays(span, events)
-            st.session_state.cur = a
-            st.rerun()
-        if st.button("取消這段放假", use_container_width=True):
-            clear_holidays(span, events)
-            st.rerun()
+@st.dialog("🏖 放假設定")
+def holiday_dialog(events, cur):
+    st.caption("放假日的行程以灰底顯示，且不計入衝突檢查與共同空閒。單日也可在當天頁面設定。")
+    rng = st.date_input("放假日期（可選一段）", (cur, cur), key="hol_range")
+    days = list(rng) if isinstance(rng, (tuple, list)) else [rng]
+    if len(days) < 1:
+        return
+    a, b = days[0], days[-1]
+    span = [a + timedelta(days=i) for i in range((b - a).days + 1)]
+    if len(span) > 120:
+        st.error("一次最多設定 120 天")
+        return
+    if st.button("標為放假", use_container_width=True, type="primary"):
+        set_holidays(span, events)
+        st.session_state.cur = a
+        st.toast(f"已標為放假：{len(span)} 天")
+        st.rerun()
+    if st.button("取消這段放假", use_container_width=True):
+        clear_holidays(span, events)
+        st.rerun()
 
 
 # ---------- 課表匯入 ----------
-def import_panel():
-    with st.expander("📥 匯入課表"):
-        mine = [e for e in events if e["id"].startswith(IMPORT_PREFIX)]
-        if mine:
-            titles = sorted({e["title"] for e in mine})
-            st.caption(f"目前已匯入 {len(titles)} 門課")
-            pick = st.multiselect("清除課程", titles, placeholder="選擇要清除的課程")
-            if pick and st.button("清除所選課程", use_container_width=True):
-                clear_courses(pick)
-                st.rerun()
-            sure = st.checkbox("確認要清除全部已匯入的課程", key="clr_all_ok")
-            if st.button("🗑 清除全部課程", use_container_width=True, disabled=not sure):
-                clear_courses()
-                st.rerun()
-            st.divider()
-        school = st.selectbox("學校", list(PARSERS), help="目前僅支援北科大，其他學校之後再加入")
-        st.caption("北科大：登入「網路加退選系統」→「顯示課表」→ 另存網頁（.html）上傳，"
-                   "或檢視原始碼全選後貼在下方。")
-        f = st.file_uploader("上傳課表 HTML", type=["html", "htm", "txt"], key="tt_file")
-        pasted = st.text_area("或貼上 HTML 原始碼", height=80, key="tt_paste")
-        raw = decode_bytes(f.getvalue()) if f else (pasted if pasted.strip() else None)
-        if not raw:
-            return
-        sessions, meta = PARSERS[school](raw)
-        if not sessions:
-            st.error("找不到課程，請確認是「顯示課表」頁面的內容")
-            return
-        n_course = len({s["code"] for s in sessions})
-        st.success(f"解析到 {n_course} 門課、共 {len(sessions)} 個上課時段")
-        st.dataframe(
-            [{"星期": f"週{WEEKDAYS[s['weekday']]}", "時間": f"{s['start']}-{s['end']}",
-              "課程": s["name"], "教室": s["room"]} for s in sessions],
-            hide_index=True, use_container_width=True)
-        d0, d1 = default_semester(meta)
-        tag = f"{meta.get('year')}-{meta.get('sem')}"
-        start = st.date_input("學期開始日", d0, key=f"tt_s_{tag}")
-        end = st.date_input("學期結束日", d1, key=f"tt_e_{tag}")
-        st.caption("課程會每週重複到結束日為止；重新匯入會取代先前匯入的課表。")
-        if st.button("匯入課表", use_container_width=True):
-            if end < start:
-                st.error("結束日不可早於開始日")
-                return
-            try:
-                import_courses(sessions, start, end)
-            except Exception as ex:  # 最常見原因：events 資料表還沒有 repeat_until 欄位
-                st.error(f"匯入失敗：請確認 Supabase 的 events 資料表有 repeat_until 欄位。（{ex}）")
-                return
-            today = date.today()
-            if not start <= today <= end:
-                st.session_state.cur = start
+@st.dialog("📥 匯入課表", width="large")
+def import_dialog():
+    mine = [e for e in events if e["id"].startswith(IMPORT_PREFIX)]
+    if mine:
+        titles = sorted({e["title"] for e in mine})
+        st.caption(f"目前已匯入 {len(titles)} 門課")
+        pick = st.multiselect("清除課程", titles, placeholder="選擇要清除的課程")
+        if pick and st.button("清除所選課程", use_container_width=True):
+            clear_courses(pick)
             st.rerun()
-
-
-# ---------- 主程式 ----------
-init_test_user()
-if "user" not in st.session_state:
-    login_page()
-    st.stop()
-
-events = load_events()
-if "cur" not in st.session_state:
-    st.session_state.cur = date.today()
-cur = st.session_state.cur
-
-st.markdown(CSS, unsafe_allow_html=True)
-from mobile_fix import inject_mobile_css
-inject_mobile_css()
-if not st.session_state.get("selected"):
-    st.title("📅 行事曆")
-
-with st.sidebar:
-    st.caption(f"👤 {st.session_state.user}")
-    if st.button("登出", use_container_width=True):
-        for k in ("user", "cur", "selected", "pending", "delete_mode"):
-            st.session_state.pop(k, None)
+        sure = st.checkbox("確認要清除全部已匯入的課程", key="clr_all_ok")
+        if st.button("🗑 清除全部課程", use_container_width=True, disabled=not sure):
+            clear_courses()
+            st.rerun()
+        st.divider()
+    school = st.selectbox("學校", list(PARSERS), help="目前僅支援北科大，其他學校之後再加入")
+    st.caption("北科大：登入「網路加退選系統」→「顯示課表」→ 另存網頁（.html）上傳，"
+               "或檢視原始碼全選後貼在下方。")
+    f = st.file_uploader("上傳課表 HTML", type=["html", "htm", "txt"], key="tt_file")
+    pasted = st.text_area("或貼上 HTML 原始碼", height=80, key="tt_paste")
+    raw = decode_bytes(f.getvalue()) if f else (pasted if pasted.strip() else None)
+    if not raw:
+        return
+    sessions, meta = PARSERS[school](raw)
+    if not sessions:
+        st.error("找不到課程，請確認是「顯示課表」頁面的內容")
+        return
+    n_course = len({s["code"] for s in sessions})
+    st.success(f"解析到 {n_course} 門課、共 {len(sessions)} 個上課時段")
+    st.dataframe(
+        [{"星期": f"週{WEEKDAYS[s['weekday']]}", "時間": f"{s['start']}-{s['end']}",
+          "課程": s["name"], "教室": s["room"]} for s in sessions],
+        hide_index=True, use_container_width=True)
+    d0, d1 = default_semester(meta)
+    tag = f"{meta.get('year')}-{meta.get('sem')}"
+    start = st.date_input("學期開始日", d0, key=f"tt_s_{tag}")
+    end = st.date_input("學期結束日", d1, key=f"tt_e_{tag}")
+    st.caption("課程會每週重複到結束日為止；重新匯入會取代先前匯入的課表。")
+    if st.button("匯入課表", use_container_width=True, type="primary"):
+        if end < start:
+            st.error("結束日不可早於開始日")
+            return
+        try:
+            import_courses(sessions, start, end)
+        except Exception as ex:  # 最常見原因：events 資料表還沒有 repeat_until 欄位
+            st.error(f"匯入失敗：請確認 Supabase 的 events 資料表有 repeat_until 欄位。（{ex}）")
+            return
+        today = date.today()
+        if not start <= today <= end:
+            st.session_state.cur = start
+        st.toast(f"已匯入 {n_course} 門課")
         st.rerun()
-    st.divider()
-    st.header("新增事件")
+
+
+# ---------- 新增事件 ----------
+@st.dialog("➕ 新增事件")
+def add_dialog(cur, events):
     with st.form("add", clear_on_submit=True):
         title = st.text_input("標題")
         d = st.date_input("日期", cur)
@@ -711,7 +691,7 @@ with st.sidebar:
         repeat = st.selectbox("重複（同日期、同時段）", REPEATS)
         until = st.date_input("重複至（可留空＝一直重複）", value=None)
         note = st.text_area("備註", height=70)
-        if st.form_submit_button("新增", use_container_width=True):
+        if st.form_submit_button("新增", use_container_width=True, type="primary"):
             if not title.strip():
                 st.error("請輸入標題")
             elif t2 <= t1:
@@ -730,33 +710,24 @@ with st.sidebar:
                 else:
                     finish_add(new_ev)
 
-    pend = st.session_state.pop("pending", None)  # 取出即清除，關掉視窗不會再跳
-    if pend:
-        confirm_dialog(pend, conflict_text(find_conflicts(pend, events)))
 
-    st.divider()
-    import_panel()
-    holiday_panel(events, cur)
-
-    st.divider()
-    on = st.session_state.get("delete_mode", False)
-    if st.button("✅ 結束清除模式" if on else "🗑 清除事件", use_container_width=True,
-                 type="primary" if on else "secondary"):
-        st.session_state.delete_mode = not on
-        st.rerun()
-
-    st.divider()
-    st.header("匯入 / 匯出")
+# ---------- 匯入 / 匯出 ----------
+@st.dialog("⇅ 匯入 / 匯出")
+def io_dialog(events):
     st.download_button("匯出 CSV", export_csv(events), "events.csv", "text/csv",
                        use_container_width=True)
     up_csv = st.file_uploader("匯入 CSV（新增，不覆蓋）", type="csv")
-    if up_csv and st.button("匯入 CSV", use_container_width=True):
+    if up_csv and st.button("匯入 CSV", use_container_width=True, type="primary"):
         added, errors = parse_csv(up_csv.getvalue(), events)
         try:
             append_events(added)
-            st.success(f"成功匯入 {len(added)} 筆")
         except Exception as ex:  # 資料庫寫入失敗
             st.error(f"寫入失敗：{ex}")
+            return
+        if not errors:
+            st.toast(f"成功匯入 {len(added)} 筆")
+            st.rerun()
+        st.success(f"成功匯入 {len(added)} 筆（關閉視窗後重新整理即可看到）")
         for m in errors[:10]:
             st.warning(m)
         if len(errors) > 10:
@@ -774,7 +745,50 @@ with st.sidebar:
             except (json.JSONDecodeError, AssertionError, KeyError, TypeError):
                 st.error("檔案格式錯誤")
 
+
+# ---------- 主程式 ----------
+init_test_user()
+if "user" not in st.session_state:
+    login_page()
+    st.stop()
+
+events = load_events()
+if "cur" not in st.session_state:
+    st.session_state.cur = date.today()
+cur = st.session_state.cur
+
+st.markdown(CSS, unsafe_allow_html=True)
+from mobile_fix import inject_mobile_css
+inject_mobile_css()
 sel = st.session_state.get("selected")
+if not sel:
+    st.title("📅 行事曆")
+
+# 工具列：原本側邊欄的功能都收進這裡（新增 / 匯入 / 放假 / 清除 / 匯入匯出 / 登出）
+with st.container(key="toolbar"):
+    tb = st.columns(6)
+    if tb[0].button("➕ 新增", use_container_width=True):
+        add_dialog(cur, events)
+    if tb[1].button("📥 課表", use_container_width=True):
+        import_dialog()
+    if tb[2].button("🏖 放假", use_container_width=True):
+        holiday_dialog(events, cur)
+    on = st.session_state.get("delete_mode", False)
+    if tb[3].button("✅ 結束清除" if on else "🗑 清除", use_container_width=True,
+                    type="primary" if on else "secondary"):
+        st.session_state.delete_mode = not on
+        st.rerun()
+    if tb[4].button("⇅ 匯入匯出", use_container_width=True):
+        io_dialog(events)
+    if tb[5].button("👤 登出", use_container_width=True, help=f"目前帳號：{st.session_state.user}"):
+        for k in ("user", "cur", "selected", "pending", "delete_mode"):
+            st.session_state.pop(k, None)
+        st.rerun()
+
+pend = st.session_state.pop("pending", None)  # 取出即清除，關掉視窗不會再跳
+if pend:
+    confirm_dialog(pend, conflict_text(find_conflicts(pend, events)))
+
 if sel:
     if st.button("← 返回"):
         st.session_state.selected = None
@@ -784,27 +798,27 @@ if sel:
 
 if st.session_state.get("delete_mode"):
     st.warning("🗑 清除模式：點選日期，進入當日後選擇要清除的事件")
-nav_box = st.container()  # 年月與上一個/今天/下一個放在「檢視」選項上方
-view = st.radio("檢視", ["月", "週", "清單", "共同空閒"], horizontal=True,
-                label_visibility="collapsed")
+head = st.container()  # 年月標題（在「檢視」那一排的上方）
+with st.container(key="viewrow"):  # 檢視選項在左，上一個 / 今天 / 下一個在同一排的右側
+    vc = st.columns([5, 1, 1, 1])
+    view = vc[0].radio("檢視", ["月", "週", "清單", "共同空閒"], horizontal=True,
+                       label_visibility="collapsed")
 if view == "共同空閒":
     free_time_view(events)
     st.stop()
 step = {"月": None, "週": 7, "清單": None}[view]
 
-with nav_box:
-    n1, n2, n3, n4 = st.columns([1, 1, 1, 5])
-    if n1.button("◀ 上一個"):
-        st.session_state.cur = (cur - timedelta(days=step)) if step else \
-            (cur.replace(day=1) - timedelta(days=1)).replace(day=1)
-        st.rerun()
-    if n2.button("今天"):
-        st.session_state.cur = date.today()
-        st.rerun()
-    if n3.button("下一個 ▶"):
-        st.session_state.cur = (cur + timedelta(days=step)) if step else \
-            (cur.replace(day=28) + timedelta(days=4)).replace(day=1)
-        st.rerun()
-    n4.subheader(f"{cur.year} 年 {cur.month} 月")
+head.subheader(f"{cur.year} 年 {cur.month} 月")
+if vc[1].button("◀ 上一個", use_container_width=True):
+    st.session_state.cur = (cur - timedelta(days=step)) if step else \
+        (cur.replace(day=1) - timedelta(days=1)).replace(day=1)
+    st.rerun()
+if vc[2].button("今天", use_container_width=True):
+    st.session_state.cur = date.today()
+    st.rerun()
+if vc[3].button("下一個 ▶", use_container_width=True):
+    st.session_state.cur = (cur + timedelta(days=step)) if step else \
+        (cur.replace(day=28) + timedelta(days=4)).replace(day=1)
+    st.rerun()
 
 {"月": month_view, "週": week_view, "清單": list_view}[view](events, cur)

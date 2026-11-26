@@ -6,24 +6,24 @@
 import streamlit as st
 
 _ROWS = ('[data-testid="stHorizontalBlock"]:has(.wd), '
-         '[data-testid="stHorizontalBlock"]:has([class*="st-key-cell"]), '
-         '[data-testid="stHorizontalBlock"]:has(button):has(h3)')  # 星期列、日期列、上一個/今天/下一個列
+         '[data-testid="stHorizontalBlock"]:has([class*="st-key-cell"])')  # 星期列、日期列
 _COLS = ('[data-testid="stHorizontalBlock"]:has(.wd) > [data-testid="stColumn"], '
-         '[data-testid="stHorizontalBlock"]:has([class*="st-key-cell"]) > [data-testid="stColumn"], '
-         '[data-testid="stHorizontalBlock"]:has(button):has(h3) > [data-testid="stColumn"]')
-
-_NAV = '[data-testid="stHorizontalBlock"]:has(button):has(h3)'
-_NAV_TITLE = _NAV + ' > [data-testid="stColumn"]:last-child'
+         '[data-testid="stHorizontalBlock"]:has([class*="st-key-cell"]) > [data-testid="stColumn"]')
+_TB = '.st-key-toolbar [data-testid="stHorizontalBlock"]'
+_VR = '.st-key-viewrow [data-testid="stHorizontalBlock"]'
 
 MOBILE_CSS = f"""
 <style>
 @media (max-width: 640px) {{
   {_ROWS} {{flex-direction:row !important;flex-wrap:nowrap !important;gap:2px !important}}
   {_COLS} {{min-width:0 !important;width:0 !important;flex:1 1 0 !important}}
-  {_NAV_TITLE} {{flex:2.6 1 0 !important}}
-  {_NAV} button {{padding:0 4px !important;min-height:2rem !important}}
-  {_NAV} button p {{font-size:12px !important;white-space:nowrap}}
-  {_NAV} h3 {{font-size:1.05rem !important;white-space:nowrap;padding:0 !important;text-align:right}}
+  {_TB} {{flex-direction:row !important;flex-wrap:wrap !important;gap:4px !important}}
+  {_TB} > [data-testid="stColumn"] {{min-width:0 !important;width:auto !important;flex:1 1 30% !important}}
+  {_VR} {{flex-direction:row !important;flex-wrap:wrap !important;gap:4px !important}}
+  {_VR} > [data-testid="stColumn"] {{min-width:0 !important;width:auto !important;flex:1 1 0 !important}}
+  {_VR} > [data-testid="stColumn"]:first-child {{flex:1 1 100% !important}}
+  .st-key-toolbar button, .st-key-viewrow button {{padding:0 4px !important;min-height:2.2rem !important}}
+  .st-key-toolbar button p, .st-key-viewrow button p {{font-size:13px !important;white-space:nowrap}}
   .block-container {{padding-left:.5rem !important;padding-right:.5rem !important}}
   .wd {{font-size:11px;padding:4px 0;border-radius:6px}}
   [class*="st-key-cell"] {{padding:2px !important;min-height:64px !important;border-radius:6px !important;gap:0 !important}}
