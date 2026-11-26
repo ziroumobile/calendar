@@ -54,6 +54,8 @@ CSS = """
 [class*="st-key-celltoday-"]{border:2px solid #4F8EF7;background:rgba(79,142,247,.08)}
 [class*="st-key-cellhol-"]{background:rgba(128,128,128,.22)}
 .cal td.hol{background:rgba(128,128,128,.22)}
+.st-key-topbar button{min-height:3rem}
+.st-key-topbar button p{font-size:30px;line-height:1}
 [class*="st-key-cell"] button{border:none;background:transparent;box-shadow:none;
     min-height:1.7rem;padding:0 .3rem;justify-content:flex-start;width:auto}
 [class*="st-key-cell"] button p{font-weight:700;font-size:15px}
@@ -601,8 +603,7 @@ def free_time_view(my_events):
 
 
 # ---------- 課表匯入 ----------
-@st.dialog("📥 匯入課表", width="large")
-def import_dialog():
+def import_panel():
     mine = [e for e in events if e["id"].startswith(IMPORT_PREFIX)]
     if mine:
         titles = sorted({e["title"] for e in mine})
@@ -688,16 +689,23 @@ def add_dialog(cur, events):
                     finish_add(new_ev)
 
 
-# ---------- 設定（匯入 / 匯出、登出） ----------
-@st.dialog("⚙ 設定")
+# ---------- 設定（課表匯入、匯入 / 匯出、登出） ----------
+@st.dialog("⚙ 設定", width="large")
 def settings_dialog(events):
-    st.caption(f"👤 目前帳號：{st.session_state.user}")
-    if st.button("登出", use_container_width=True):
-        for k in ("user", "cur", "selected", "pending", "delete_mode"):
-            st.session_state.pop(k, None)
-        st.rerun()
-    st.divider()
-    st.subheader("匯入 / 匯出")
+    tab_tt, tab_io, tab_acc = st.tabs(["📥 課表匯入", "⇅ 匯入 / 匯出", "👤 帳號"])
+    with tab_tt:
+        import_panel()
+    with tab_io:
+        io_panel(events)
+    with tab_acc:
+        st.caption(f"目前帳號：{st.session_state.user}")
+        if st.button("登出", use_container_width=True):
+            for k in ("user", "cur", "selected", "pending", "delete_mode"):
+                st.session_state.pop(k, None)
+            st.rerun()
+
+
+def io_panel(events):
     st.download_button("匯出 CSV", export_csv(events), "events.csv", "text/csv",
                        use_container_width=True)
     up_csv = st.file_uploader("匯入 CSV（新增，不覆蓋）", type="csv")
@@ -746,20 +754,18 @@ from mobile_fix import inject_mobile_css
 inject_mobile_css()
 sel = st.session_state.get("selected")
 
-# 右上角設定鈕（匯入 / 匯出、登出）；放假只在「點進日期」的當天頁面設定
+# 右上角設定鈕（課表匯入、匯入 / 匯出、登出）；放假只在「點進日期」的當天頁面設定
 with st.container(key="topbar"):
-    top_l, top_r = st.columns([9, 1])
+    top_l, top_r = st.columns([8, 1])
     if not sel:
         top_l.title("📅 行事曆")
-    if top_r.button("⚙", use_container_width=True, help="設定：匯入 / 匯出、登出"):
+    if top_r.button("⚙️", use_container_width=True, help="設定：課表匯入、匯入 / 匯出、登出"):
         settings_dialog(events)
 
 with st.container(key="toolbar"):
-    tb = st.columns(3)
-    if tb[0].button("➕ 新增", use_container_width=True):
+    tb = st.columns([5, 1.5, 1.5])  # 第一欄留空，讓按鈕靠右
+    if tb[1].button("➕ 新增", use_container_width=True):
         add_dialog(cur, events)
-    if tb[1].button("📥 課表", use_container_width=True):
-        import_dialog()
     on = st.session_state.get("delete_mode", False)
     if tb[2].button("✅ 結束清除" if on else "🗑 清除", use_container_width=True,
                     type="primary" if on else "secondary"):
