@@ -29,6 +29,8 @@ REPEATS = ["無", "每天", "每週", "每月", "每年"]
 WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"]
 HOURS = range(7, 23)
 IMPORT_PREFIX = "tt-"  # 匯入課表產生的事件 id 前綴，重新匯入時用來辨識並取代
+HOLIDAY = "放假"  # 放假標記（整天事件）的分類，不在 CATS 內所以不會出現在新增事件的分類選單
+HOLIDAY_PREFIX = "hol-"
 
 CSS = """
 <style>
@@ -50,6 +52,8 @@ CSS = """
     padding:6px 8px;min-height:112px;background:rgba(128,128,128,.04);gap:.2rem}
 [class*="st-key-cellout-"]{opacity:.45}
 [class*="st-key-celltoday-"]{border:2px solid #4F8EF7;background:rgba(79,142,247,.08)}
+[class*="st-key-cellhol-"]{background:rgba(128,128,128,.22)}
+.cal td.hol{background:rgba(128,128,128,.22)}
 [class*="st-key-cell"] button{border:none;background:transparent;box-shadow:none;
     min-height:1.7rem;padding:0 .3rem;justify-content:flex-start;width:auto}
 [class*="st-key-cell"] button p{font-weight:700;font-size:15px}
@@ -224,8 +228,50 @@ def occurs_on(e, day):
     return False
 
 
+def holiday_dates(events):
+    return {e["date"] for e in events if e.get("cat") == HOLIDAY}
+
+
+def is_holiday(events, day):
+    return day.isoformat() in holiday_dates(events)
+
+
 def events_on(events, day):
-    return sorted((e for e in events if occurs_on(e, day)), key=lambda e: e["start"])
+    """當天出現的事件（放假標記本身不算）。放假日的事件仍會回傳，畫面上以灰底顯示。"""
+    return sorted((e for e in events if e.get("cat") != HOLIDAY and occurs_on(e, day)),
+                  key=lambda e: e["start"])
+
+
+def busy_on(events, day):
+    """放假日視為沒有行程（用於衝突檢查與共同空閒）。"""
+    return [] if is_holiday(events, day) else events_on(events, day)
+
+
+def set_holidays(days, events):
+    """把指定日期標為放假（已是放假的略過），回傳新增天數。"""
+    have = holiday_dates(events)
+    rows = [_to_db({"id": HOLIDAY_PREFIX + uuid.uuid4().hex[:8], "title": "放假", "date": d.isoformat(),
+                    "start": "00:00", "end": "23:59", "cat": HOLIDAY, "repeat": "無", "until": "",
+                    "note": ""}) for d in days if d.isoformat() not in have]
+    if rows:
+        db().table("events").insert(rows).execute()
+    return len(rows)
+
+
+def clear_holidays(days, events):
+    ids = [e["id"] for e in events if e.get("cat") == HOLIDAY and date.fromisoformat(e["date"]) in set(days)]
+    if ids:
+        db().table("events").delete().eq("username", st.session_state.user).in_("id", ids).execute()
+    return len(ids)
+
+
+def clear_courses(titles=None):
+    """清除匯入的課表；titles 有值時只清除這些課程，否則全部清除。"""
+    q = (db().table("events").delete().eq("username", st.session_state.user)
+         .like("id", IMPORT_PREFIX + "%"))
+    if titles:
+        q = q.in_("title", list(titles))
+    q.execute()
 
 
 def find_conflicts(new, events, horizon_days=366):
@@ -238,7 +284,7 @@ def find_conflicts(new, events, horizon_days=366):
     out, day = [], d0
     while day <= end:
         if occurs_on(new, day):
-            out += [(day, e) for e in events_on(events, day)
+            out += [(day, e) for e in busy_on(events, day)
                     if new["start"] < e["end"] and e["start"] < new["end"]]
         day += timedelta(days=1)
     return out
@@ -321,7 +367,7 @@ def parse_csv(data, existing=()):
                 raise ValueError("重複至不可早於日期")
             cat = (row.get("cat") or "").strip()
             ev = {"title": title, "date": d.isoformat(), "start": s, "end": t,
-                  "cat": cat if cat in CATS else "其他", "repeat": rep, "until": until,
+                  "cat": cat if (cat in CATS or cat == HOLIDAY) else "其他", "repeat": rep, "until": until,
                   "note": (row.get("note") or "").strip()}
         except (ValueError, TypeError) as ex:
             errors.append(f"第 {n} 列：{ex}")
@@ -352,21 +398,24 @@ def confirm_dialog(ev, text):
         st.rerun()
 
 
-def chip(e, with_time=True):
+def chip(e, with_time=True, off=False):
     t = f'{e["start"]} ' if with_time else ""
-    return (f'<span class="chip" style="background:{CATS.get(e["cat"], "#8E8E93")}" '
+    bg = "#B5B5BA" if off else CATS.get(e["cat"], "#8E8E93")
+    extra = ";opacity:.75;text-decoration:line-through" if off else ""
+    return (f'<span class="chip" style="background:{bg}{extra}" '
             f'title="{html.escape(e.get("note", ""))}">{t}{html.escape(e["title"])}</span>')
 
 
 # ---------- 檢視 ----------
-def event_card(e):
-    color = CATS.get(e["cat"], "#8E8E93")
+def event_card(e, off=False):
+    color = "#B5B5BA" if off else CATS.get(e["cat"], "#8E8E93")
+    dim = ";opacity:.6" if off else ""
     rep = ""
     if e.get("repeat", "無") != "無":
         rep = f" · 🔁 {e['repeat']}" + (f"（至 {e['until']}）" if e.get("until") else "")
     note = (f"<div class='no'>備註: {html.escape(e['note']).replace(chr(10), '<br>')}</div>"
             if e.get("note") else "")
-    return (f"<div class='ev' style='border-left:6px solid {color}'>"
+    return (f"<div class='ev' style='border-left:6px solid {color}{dim}'>"
             f"<div class='ev-t'><div class='s'>{e['start']}</div><div class='e'>{e['end']}</div></div>"
             f"<div class='ev-b'><div class='ti'>{html.escape(e['title'])}"
             f"<span class='badge' style='background:{color}'>{html.escape(e['cat'])}</span>{rep}</div>"
@@ -374,11 +423,14 @@ def event_card(e):
 
 
 def month_view(events, cur):
+    hol = holiday_dates(events)
     for c, w in zip(st.columns(7), WEEKDAYS):
         c.markdown(f"<div class='wd'>週{w}</div>", unsafe_allow_html=True)
     for week in calendar.Calendar(0).monthdatescalendar(cur.year, cur.month):
         for col, d in zip(st.columns(7), week):
-            kind = "celltoday" if d == date.today() else ("cellout" if d.month != cur.month else "cell")
+            off = d.isoformat() in hol
+            kind = ("celltoday" if d == date.today() else "cellhol" if off
+                    else "cellout" if d.month != cur.month else "cell")
             with col, st.container(key=f"{kind}-{d.isoformat()}"):
                 label = f"{d.month}/{d.day}" if (d.month != cur.month or d.day == 1) else str(d.day)
                 if st.button(label, key=f"day-{d.isoformat()}"):
@@ -386,7 +438,7 @@ def month_view(events, cur):
                     st.session_state.cur = d
                     st.rerun()
                 evs = events_on(events, d)
-                html_ = "".join(chip(e) for e in evs[:3])
+                html_ = ("<span class='more'>🏖 放假</span>" if off else "") + "".join(chip(e, off=off) for e in evs[:3])
                 if len(evs) > 3:
                     html_ += f"<span class='more'>+{len(evs) - 3} 更多</span>"
                 st.markdown(html_, unsafe_allow_html=True)
@@ -394,18 +446,27 @@ def month_view(events, cur):
 
 def day_view(events, d):
     evs = events_on(events, d)
+    off = is_holiday(events, d)
     st.markdown(f"<div class='dayhead'><div class='dn'>{d.day}</div><div>"
                 f"<div class='dw'>{d.year} 年 {d.month} 月 · 週{WEEKDAYS[d.weekday()]}</div>"
                 f"<div class='dc'>共 {len(evs)} 項行程</div></div></div>", unsafe_allow_html=True)
+    if off:
+        st.info("🏖 這天已設為放假，當日行程以灰底顯示。")
+    if st.button("↩ 取消放假" if off else "🏖 設為放假", key=f"holtoggle-{d.isoformat()}"):
+        if off:
+            clear_holidays([d], events)
+        else:
+            set_holidays([d], events)
+        st.rerun()
     if not evs:
         st.info("這天沒有行程")
         return
     if not st.session_state.get("delete_mode"):
-        st.markdown("".join(event_card(e) for e in evs), unsafe_allow_html=True)
+        st.markdown("".join(event_card(e, off) for e in evs), unsafe_allow_html=True)
         return
     st.warning("清除模式：請選擇要清除的事件")
     for e in evs:
-        st.markdown(event_card(e), unsafe_allow_html=True)
+        st.markdown(event_card(e, off), unsafe_allow_html=True)
         series = e.get("repeat", "無") != "無"
         if st.button("🗑 刪除整個重複系列" if series else "🗑 刪除", key=f"del-{e['id']}"):
             delete_event(e["id"])
@@ -418,14 +479,16 @@ def week_view(events, cur):
     rows = ["<table class='cal wk'><tr><th></th>" + "".join(
         f"<th>週{WEEKDAYS[i]}<br>{d.month}/{d.day}</th>" for i, d in enumerate(days)) + "</tr>"]
     per_day = {d: events_on(events, d) for d in days}
+    hol = holiday_dates(events)
     for h in HOURS:
         rows.append(f"<tr><td class='h'>{h:02d}:00</td>")
         for d in days:
             hit = [e for e in per_day[d]
                    if int(e["start"][:2]) <= h < max(int(e["end"][:2]) + (e["end"][3:] != "00"),
                                                       int(e["start"][:2]) + 1)]
-            cls = "today" if d == date.today() else ""
-            rows.append(f"<td class='{cls}'>{''.join(chip(e, False) for e in hit)}</td>")
+            off = d.isoformat() in hol
+            cls = ("today" if d == date.today() else "") + (" hol" if off else "")
+            rows.append(f"<td class='{cls}'>{''.join(chip(e, False, off) for e in hit)}</td>")
         rows.append("</tr>")
     rows.append("</table>")
     st.markdown("".join(rows), unsafe_allow_html=True)
@@ -433,13 +496,16 @@ def week_view(events, cur):
 
 def list_view(events, cur):
     found = False
+    hol = holiday_dates(events)
     for day in range(1, calendar.monthrange(cur.year, cur.month)[1] + 1):
         d = date(cur.year, cur.month, day)
+        off = d.isoformat() in hol
         evs = events_on(events, d)
-        if evs:
+        if evs or off:
             found = True
-            st.markdown(f"<div class='dh'>{d.month}/{d.day}（週{WEEKDAYS[d.weekday()]}）</div>"
-                        + "".join(event_card(e) for e in evs), unsafe_allow_html=True)
+            st.markdown(f"<div class='dh'>{d.month}/{d.day}（週{WEEKDAYS[d.weekday()]}）"
+                        + ("　🏖 放假" if off else "") + "</div>"
+                        + "".join(event_card(e, off) for e in evs), unsafe_allow_html=True)
     if not found:
         st.info("本月沒有事件")
 
@@ -465,7 +531,7 @@ def common_free(people, d1, d2, w1, w2, min_len):
     out, day = [], d1
     while day <= d2:
         busy = sorted((max(to_min(e["start"]), w1), min(to_min(e["end"]), w2))
-                      for evs in people for e in events_on(evs, day))
+                      for evs in people for e in busy_on(evs, day))
         cursor, slots = w1, []
         for s, e in busy:
             if e <= s:  # 完全在時間窗之外
@@ -534,9 +600,44 @@ def free_time_view(my_events):
     st.markdown("".join(html_), unsafe_allow_html=True)
 
 
+# ---------- 放假設定 ----------
+def holiday_panel(events, cur):
+    with st.expander("🏖 放假設定"):
+        st.caption("放假日的行程以灰底顯示，且不計入衝突檢查與共同空閒。單日也可在當天頁面設定。")
+        rng = st.date_input("放假日期（可選一段）", (cur, cur), key="hol_range")
+        days = list(rng) if isinstance(rng, (tuple, list)) else [rng]
+        if len(days) < 1:
+            return
+        a, b = days[0], days[-1]
+        span = [a + timedelta(days=i) for i in range((b - a).days + 1)]
+        if len(span) > 120:
+            st.error("一次最多設定 120 天")
+            return
+        if st.button("標為放假", use_container_width=True):
+            set_holidays(span, events)
+            st.session_state.cur = a
+            st.rerun()
+        if st.button("取消這段放假", use_container_width=True):
+            clear_holidays(span, events)
+            st.rerun()
+
+
 # ---------- 課表匯入 ----------
 def import_panel():
     with st.expander("📥 匯入課表"):
+        mine = [e for e in events if e["id"].startswith(IMPORT_PREFIX)]
+        if mine:
+            titles = sorted({e["title"] for e in mine})
+            st.caption(f"目前已匯入 {len(titles)} 門課")
+            pick = st.multiselect("清除課程", titles, placeholder="選擇要清除的課程")
+            if pick and st.button("清除所選課程", use_container_width=True):
+                clear_courses(pick)
+                st.rerun()
+            sure = st.checkbox("確認要清除全部已匯入的課程", key="clr_all_ok")
+            if st.button("🗑 清除全部課程", use_container_width=True, disabled=not sure):
+                clear_courses()
+                st.rerun()
+            st.divider()
         school = st.selectbox("學校", list(PARSERS), help="目前僅支援北科大，其他學校之後再加入")
         st.caption("北科大：登入「網路加退選系統」→「顯示課表」→ 另存網頁（.html）上傳，"
                    "或檢視原始碼全選後貼在下方。")
@@ -635,6 +736,7 @@ with st.sidebar:
 
     st.divider()
     import_panel()
+    holiday_panel(events, cur)
 
     st.divider()
     on = st.session_state.get("delete_mode", False)
