@@ -43,6 +43,9 @@ CSS = """
 .more{font-size:11px;opacity:.6}
 .wd{text-align:center;font-weight:600;padding:6px 0;border-radius:8px;
     background:rgba(79,142,247,.12);color:#4F8EF7}
+[data-testid="stHorizontalBlock"]:has(.wd) > [data-testid="stColumn"]:nth-child(n+6) .wd{
+    background:rgba(229,72,77,.12);color:#E5484D}
+.wk th:nth-child(n+7){background:rgba(229,72,77,.12);color:#E5484D}
 [class*="st-key-cell"]{border:1px solid rgba(128,128,128,.25);border-radius:12px;
     padding:6px 8px;min-height:112px;background:rgba(128,128,128,.04);gap:.2rem}
 [class*="st-key-cellout-"]{opacity:.45}
@@ -679,6 +682,7 @@ if sel:
 
 if st.session_state.get("delete_mode"):
     st.warning("🗑 清除模式：點選日期，進入當日後選擇要清除的事件")
+nav_box = st.container()  # 年月與上一個/今天/下一個放在「檢視」選項上方
 view = st.radio("檢視", ["月", "週", "清單", "共同空閒"], horizontal=True,
                 label_visibility="collapsed")
 if view == "共同空閒":
@@ -686,18 +690,19 @@ if view == "共同空閒":
     st.stop()
 step = {"月": None, "週": 7, "清單": None}[view]
 
-n1, n2, n3, n4 = st.columns([1, 1, 1, 5])
-if n1.button("◀ 上一個"):
-    st.session_state.cur = (cur - timedelta(days=step)) if step else \
-        (cur.replace(day=1) - timedelta(days=1)).replace(day=1)
-    st.rerun()
-if n2.button("今天"):
-    st.session_state.cur = date.today()
-    st.rerun()
-if n3.button("下一個 ▶"):
-    st.session_state.cur = (cur + timedelta(days=step)) if step else \
-        (cur.replace(day=28) + timedelta(days=4)).replace(day=1)
-    st.rerun()
-n4.subheader(f"{cur.year} 年 {cur.month} 月")
+with nav_box:
+    n1, n2, n3, n4 = st.columns([1, 1, 1, 5])
+    if n1.button("◀ 上一個"):
+        st.session_state.cur = (cur - timedelta(days=step)) if step else \
+            (cur.replace(day=1) - timedelta(days=1)).replace(day=1)
+        st.rerun()
+    if n2.button("今天"):
+        st.session_state.cur = date.today()
+        st.rerun()
+    if n3.button("下一個 ▶"):
+        st.session_state.cur = (cur + timedelta(days=step)) if step else \
+            (cur.replace(day=28) + timedelta(days=4)).replace(day=1)
+        st.rerun()
+    n4.subheader(f"{cur.year} 年 {cur.month} 月")
 
 {"月": month_view, "週": week_view, "清單": list_view}[view](events, cur)
