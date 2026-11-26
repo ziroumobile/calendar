@@ -54,8 +54,12 @@ CSS = """
 [class*="st-key-celltoday-"]{border:2px solid #4F8EF7;background:rgba(79,142,247,.08)}
 [class*="st-key-cellhol-"]{background:rgba(128,128,128,.22)}
 .cal td.hol{background:rgba(128,128,128,.22)}
-.st-key-topbar button{min-height:3rem}
-.st-key-topbar button p{font-size:30px;line-height:1}
+.st-key-topbar button{min-height:2.7rem}
+.st-key-topbar button p{font-size:27px;line-height:1}
+.st-key-toolbar{display:flex;flex-direction:row !important;justify-content:flex-end;flex-wrap:nowrap;gap:.5rem}
+.st-key-toolbar > *{width:auto !important;flex:0 0 auto !important}
+.st-key-toolbar button{min-height:2rem;padding:0 .7rem}
+.st-key-toolbar button p{font-size:13px;white-space:nowrap}
 [class*="st-key-cell"] button{border:none;background:transparent;box-shadow:none;
     min-height:1.7rem;padding:0 .3rem;justify-content:flex-start;width:auto}
 [class*="st-key-cell"] button p{font-weight:700;font-size:15px}
@@ -692,13 +696,13 @@ def add_dialog(cur, events):
 # ---------- 設定（課表匯入、匯入 / 匯出、登出） ----------
 @st.dialog("⚙ 設定", width="large")
 def settings_dialog(events):
-    tab_tt, tab_io, tab_acc = st.tabs(["📥 課表匯入", "⇅ 匯入 / 匯出", "👤 帳號"])
+    tab_tt, tab_io = st.tabs(["📥 課表匯入", "⇅ 匯入 / 匯出"])
     with tab_tt:
         import_panel()
     with tab_io:
         io_panel(events)
-    with tab_acc:
-        st.caption(f"目前帳號：{st.session_state.user}")
+        st.divider()  # 登出放在這一頁最底下
+        st.caption(f"👤 目前帳號：{st.session_state.user}")
         if st.button("登出", use_container_width=True):
             for k in ("user", "cur", "selected", "pending", "delete_mode"):
                 st.session_state.pop(k, None)
@@ -763,12 +767,10 @@ with st.container(key="topbar"):
         settings_dialog(events)
 
 with st.container(key="toolbar"):
-    tb = st.columns([5, 1.5, 1.5])  # 第一欄留空，讓按鈕靠右
-    if tb[1].button("➕ 新增", use_container_width=True):
+    if st.button("➕ 新增"):  # 小按鈕，靠右排列（樣式在 CSS 的 .st-key-toolbar）
         add_dialog(cur, events)
     on = st.session_state.get("delete_mode", False)
-    if tb[2].button("✅ 結束清除" if on else "🗑 清除", use_container_width=True,
-                    type="primary" if on else "secondary"):
+    if st.button("✅ 結束清除" if on else "🗑 清除", type="primary" if on else "secondary"):
         st.session_state.delete_mode = not on
         st.rerun()
 
